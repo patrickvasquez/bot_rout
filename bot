@@ -174,7 +174,6 @@ def format_router_card(router):
         f"{included_text}\n\n"
         f"{services_text}\n\n"
         f"❗️ Без постоянных переключений — включили и сразу пользуетесь\n\n"
-        f"{router['extra']}\n\n"
         f"{stock}"
     )
     return text
@@ -216,10 +215,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ═══════════════════════════════════════════════════
-# ГЛАВНОЕ МЕНЮ (из кнопки)
+# ВОЗВРАТ В ГЛАВНОЕ МЕНЮ (приветственное сообщение остаётся)
 # ═══════════════════════════════════════════════════
 
-async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def go_back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Удаляет все сообщения бота кроме приветственного — оно и есть главное меню"""
     query = update.callback_query
     user_id = query.from_user.id if query else update.effective_user.id
     chat_id = query.message.chat.id if query else update.effective_chat.id
@@ -227,19 +227,6 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_states[user_id] = 'main_menu'
     await delete_only_bot_messages(chat_id, context)
 
-    text = (
-        f"🏠 <b>Главное меню</b>\n\n"
-        f"📡 Моделей: <b>{len(ROUTERS)}</b>\n\n"
-        f"Выбери раздел 👇"
-    )
-
-    message = await context.bot.send_message(
-        chat_id=chat_id,
-        text=text,
-        parse_mode='HTML',
-        reply_markup=get_main_menu()
-    )
-    add_message_to_history(chat_id, message.message_id)
     if query:
         await query.answer()
 
@@ -347,11 +334,11 @@ async def show_about_tab(chat_id, context):
         "Мы делаем интернет удобным и стабильным с первого включения.\n\n"
         "Наша задача — чтобы вы просто включили роутер и всё заработало: "
         "без ручных настроек, без переключений и без головной боли.\n\n"
-        " 🔹 <b>Сервисы и платформы:</b>"
-         " • Популярные видеохостинги и соцсети"
-         " • Современные AI-сервисы и нейросети"
-         " • Мессенджеры, голосовые звонки и музыка"
-         " • Онлайн-кинотеатры, стриминг и игровые платформы"
+        " 🔹 <b>Сервисы и платформы:</b>\n"
+        "  • Популярные видеохостинги и соцсети\n"
+        "  • Современные AI-сервисы и нейросети\n"
+        "  • Мессенджеры, голосовые звонки и музыка\n"
+        "  • Онлайн-кинотеатры, стриминг и игровые платформы\n\n"
         "🎮 <b>Игры:</b>\n"
         "  • Rocket League, Fortnite, Valorant\n"
         "  • Steam, Epic Games, PlayStation Network, Xbox Live\n"
@@ -427,10 +414,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = query.message.chat.id
     data = query.data
 
-    # Главное меню
+    # Главное меню — просто возврат к приветственному сообщению
     if data == 'main_menu':
-        await delete_only_bot_messages(chat_id, context)
-        await show_main_menu(update, context)
+        await go_back_to_main(update, context)
         return
 
     if data == 'noop':
@@ -477,14 +463,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     add_user_input_to_history(chat_id, update.message.message_id)
 
-    await delete_only_bot_messages(chat_id, context)
-    message = await context.bot.send_message(
-        chat_id=chat_id,
-        text="Используй кнопки меню для навигации 👇",
-        parse_mode='HTML',
-        reply_markup=get_main_menu()
-    )
-    add_message_to_history(chat_id, message.message_id)
+    # Удаляем сообщение пользователя через секунду, меню уже есть наверху
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
 
 
 # ═══════════════════════════════════════════════════
