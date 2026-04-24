@@ -1,0 +1,518 @@
+import logging
+import os
+import asyncio
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+
+# ═══════════════════════════════════════════════════
+# НАСТРОЙКА
+# ═══════════════════════════════════════════════════
+
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.WARNING
+)
+logger = logging.getLogger(__name__)
+
+# ⚠️ Вставь свой токен от @BotFather
+TOKEN = "8785001928:AAFoGCAvP10fCxS8hgQZwbezscQf3u6JH_E"
+
+# Ссылка на тех. поддержку / заказ
+SUPPORT_USERNAME = "umbra_routers_support"
+
+# Хранилища состояний
+user_states = {}
+user_message_history = {}
+user_input_history = {}
+start_message_ids = {}
+
+# ═══════════════════════════════════════════════════
+# КАТАЛОГ РОУТЕРОВ
+# ═══════════════════════════════════════════════════
+
+ROUTERS = [
+    {
+        "id": "1",
+        "brand": "ASUS",
+        "model": "RT-AX52",
+        "price": 7900,
+        "standard": "Wi-Fi 6 (AX1800)",
+        "speed": "до 1800 Мбит/с",
+        "ports": "Гигабитные порты (WAN + LAN)",
+        "mesh": "Поддержка AiMesh — расширение покрытия без потери качества",
+        "features": [
+            "Wi-Fi 6 (AX1800) — стабильный сигнал и низкий пинг",
+            "До 1800 Мбит/с — стриминг, игры, удалённая работа",
+            "Гигабитные порты — высокая скорость по кабелю",
+            "Поддержка AiMesh — расширение покрытия",
+            "Справляется с большим количеством устройств",
+        ],
+        "included_in_price": [
+            "Связываемся с вами, уточняем задачи",
+            "Полностью настраиваем устройство под ваши сценарии",
+        ],
+        "services": [
+            "Доступ к Meta, YouTube, Twitter (X), Discord, ChatGPT, Gemini и др.",
+            "Умная маршрутизация трафика — всё работает автоматически",
+            "Без постоянных переключений VPN — включили и пользуетесь",
+        ],
+        "extra": "📦 Каждый роутер вскрывается и настраивается на видео — вы видите весь процесс и уверены, что получаете новый товар.",
+        "in_stock": True,
+    },
+]
+
+
+
+
+# ═══════════════════════════════════════════════════
+# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+# ═══════════════════════════════════════════════════
+
+async def delete_all_previous_messages(chat_id, context):
+    try:
+        start_msg_id = start_message_ids.get(chat_id)
+        if chat_id in user_message_history and user_message_history[chat_id]:
+            for msg_id in user_message_history[chat_id]:
+                if msg_id == start_msg_id:
+                    continue
+                try:
+                    await context.bot.delete_message(chat_id=chat_id, message_id=msg_id)
+                except Exception:
+                    pass
+            user_message_history[chat_id] = [start_msg_id] if start_msg_id else []
+        if chat_id in user_input_history and user_input_history[chat_id]:
+            for msg_id in user_input_history[chat_id]:
+                try:
+                    await context.bot.delete_message(chat_id=chat_id, message_id=msg_id)
+                except Exception:
+                    pass
+            user_input_history[chat_id] = []
+    except Exception as e:
+        logger.error(f"Ошибка при удалении сообщений: {e}")
+
+
+def add_message_to_history(chat_id, message_id):
+    if chat_id not in user_message_history:
+        user_message_history[chat_id] = []
+    user_message_history[chat_id].append(message_id)
+    if len(user_message_history[chat_id]) > 20:
+        start_msg_id = start_message_ids.get(chat_id)
+        if start_msg_id and start_msg_id in user_message_history[chat_id]:
+            filtered = [start_msg_id] + [m for m in user_message_history[chat_id][-19:] if m != start_msg_id]
+            user_message_history[chat_id] = filtered
+        else:
+            user_message_history[chat_id] = user_message_history[chat_id][-20:]
+
+
+def add_user_input_to_history(chat_id, message_id):
+    if chat_id not in user_input_history:
+        user_input_history[chat_id] = []
+    user_input_history[chat_id].append(message_id)
+    if len(user_input_history[chat_id]) > 10:
+        user_input_history[chat_id] = user_input_history[chat_id][-10:]
+
+
+async def delete_only_bot_messages(chat_id, context):
+    try:
+        start_msg_id = start_message_ids.get(chat_id)
+        if chat_id in user_message_history and user_message_history[chat_id]:
+            for msg_id in user_message_history[chat_id]:
+                if msg_id == start_msg_id:
+                    continue
+                try:
+                    await context.bot.delete_message(chat_id=chat_id, message_id=msg_id)
+                except Exception:
+                    pass
+            user_message_history[chat_id] = [start_msg_id] if start_msg_id else []
+    except Exception as e:
+        logger.error(f"Ошибка при удалении сообщений бота: {e}")
+
+
+def format_price(price):
+    return f"{price:,}".replace(",", " ") + " ₽"
+
+
+# ═══════════════════════════════════════════════════
+# КЛАВИАТУРЫ
+# ═══════════════════════════════════════════════════
+
+def get_main_menu():
+    """Главное меню — 3 вкладки + тех. поддержка"""
+    keyboard = [
+        [InlineKeyboardButton("📡 Модели роутеров", callback_data='tab_models')],
+        [InlineKeyboardButton("🔑 Ключ для роутера", callback_data='tab_key')],
+        [InlineKeyboardButton("ℹ️ О нас", callback_data='tab_about')],
+        [InlineKeyboardButton("🛠 Тех. поддержка", url=f"https://t.me/{SUPPORT_USERNAME}")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+def get_back_to_menu():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🏠 Главное меню", callback_data='main_menu')]
+    ])
+
+
+# ═══════════════════════════════════════════════════
+# ФОРМАТИРОВАНИЕ КАРТОЧКИ РОУТЕРА
+# ═══════════════════════════════════════════════════
+
+def format_router_card(router):
+    """Полная карточка роутера с характеристиками"""
+    stock = "✅ В наличии" if router["in_stock"] else "❌ Нет в наличии"
+
+    features_text = "\n".join(f"  • {f}" for f in router["features"])
+    included_text = "\n".join(f"  ✔️ {s}" for s in router["included_in_price"])
+    services_text = "\n".join(f"  ✅ {s}" for s in router["services"])
+
+    text = (
+        f"📡 <b>{router['brand']} {router['model']}</b>\n\n"
+        f"<b>Интернет без тормозов и лишних действий — настраиваем всё за вас</b>\n\n"
+        f"🔹 <b>Основные характеристики:</b>\n"
+        f"{features_text}\n\n"
+        f"💰 <b>Стоимость — {format_price(router['price'])}</b>\n"
+        f"В эту цену входит не только роутер:\n"
+        f"{included_text}\n\n"
+        f"{services_text}\n\n"
+        f"❗️ Без постоянных переключений VPN — включили и сразу пользуетесь\n\n"
+        f"{router['extra']}\n\n"
+        f"{stock}"
+    )
+    return text
+
+
+# ═══════════════════════════════════════════════════
+# ОБРАБОТЧИК /start
+# ═══════════════════════════════════════════════════
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    chat_id = update.effective_chat.id
+    user_id = user.id
+
+    user_states[user_id] = 'main_menu'
+    await delete_all_previous_messages(chat_id, context)
+    add_user_input_to_history(chat_id, update.message.message_id)
+
+    welcome = (
+        f"Привет, {user.first_name}! 👋\n\n"
+        f"Рады видеть тебя в <b>Umbra Routers </b> 📡\n\n"
+        f"Мы — небольшая команда, которая решает одну простую задачу: "
+        f"чтобы интернет у вас дома <b>просто работал</b> — быстро, стабильно "
+        f"и без лишних действий с вашей стороны.\n\n"
+        f"Мы не просто продаём роутеры — мы связываемся с вами, узнаём ваши задачи "
+        f"и <b>полностью настраиваем устройство под ключ</b>. "
+        f"Вы получаете готовое решение: включили — и всё работает.\n\n"
+        f"Выбери раздел ниже 👇"
+    )
+
+    message = await context.bot.send_message(
+        chat_id=chat_id,
+        text=welcome,
+        parse_mode='HTML',
+        reply_markup=get_main_menu()
+    )
+    start_message_ids[chat_id] = message.message_id
+    add_message_to_history(chat_id, message.message_id)
+
+
+# ═══════════════════════════════════════════════════
+# ГЛАВНОЕ МЕНЮ (из кнопки)
+# ═══════════════════════════════════════════════════
+
+async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user_id = query.from_user.id if query else update.effective_user.id
+    chat_id = query.message.chat.id if query else update.effective_chat.id
+
+    user_states[user_id] = 'main_menu'
+    await delete_only_bot_messages(chat_id, context)
+
+    text = (
+        f"🏠 <b>Главное меню</b>\n\n"
+        f"📡 Моделей: <b>{len(ROUTERS)}</b>\n\n"
+        f"Выбери раздел 👇"
+    )
+
+    message = await context.bot.send_message(
+        chat_id=chat_id,
+        text=text,
+        parse_mode='HTML',
+        reply_markup=get_main_menu()
+    )
+    add_message_to_history(chat_id, message.message_id)
+    if query:
+        await query.answer()
+
+
+# ═══════════════════════════════════════════════════
+# ВКЛАДКА 1 — МОДЕЛИ
+# ═══════════════════════════════════════════════════
+
+async def show_models_tab(chat_id, context):
+    """Показывает список моделей — нажми чтобы посмотреть характеристики"""
+    text = "📡 <b>Наши модели</b>\n\nНажмите на модель, чтобы посмотреть характеристики:"
+
+    keyboard = []
+    for r in ROUTERS:
+        stock_icon = "✅" if r["in_stock"] else "❌"
+        btn_text = f"{stock_icon} {r['brand']} {r['model']} — {format_price(r['price'])}"
+        keyboard.append([InlineKeyboardButton(btn_text, callback_data=f'router_{r["id"]}')])
+
+    keyboard.append([InlineKeyboardButton("🏠 Главное меню", callback_data='main_menu')])
+
+    message = await context.bot.send_message(
+        chat_id=chat_id,
+        text=text,
+        parse_mode='HTML',
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    add_message_to_history(chat_id, message.message_id)
+
+
+async def show_router_card(chat_id, context, router_id):
+    """Показывает полную карточку роутера"""
+    router = None
+    for r in ROUTERS:
+        if r["id"] == router_id:
+            router = r
+            break
+
+    if not router:
+        message = await context.bot.send_message(
+            chat_id=chat_id,
+            text="❌ Модель не найдена.",
+            reply_markup=get_back_to_menu()
+        )
+        add_message_to_history(chat_id, message.message_id)
+        return
+
+    text = format_router_card(router)
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📩 Заказать", callback_data=f'order_{router_id}')],
+        [InlineKeyboardButton("🛠 Тех. поддержка", url=f"https://t.me/{SUPPORT_USERNAME}")],
+        [
+            InlineKeyboardButton("📡 К моделям", callback_data='tab_models'),
+            InlineKeyboardButton("🏠 Меню", callback_data='main_menu'),
+        ],
+    ])
+
+    message = await context.bot.send_message(
+        chat_id=chat_id,
+        text=text,
+        parse_mode='HTML',
+        reply_markup=keyboard
+    )
+    add_message_to_history(chat_id, message.message_id)
+
+
+# ═══════════════════════════════════════════════════
+# ВКЛАДКА 2 — КЛЮЧ ДЛЯ РОУТЕРА
+# ═══════════════════════════════════════════════════
+
+async def show_key_tab(chat_id, context):
+    text = (
+        "🔑 <b>Ключ для роутера</b>\n\n"
+        "После покупки роутера вам будет предоставлен <b>персональный ключ</b>, "
+        "который нужно ввести в настройках устройства. "
+        "Без ключа расширенные функции работать не будут.\n\n"
+        "📋 <b>Как получить ключ:</b>\n\n"
+        "1️⃣ Оформите заказ на роутер — напишите нам\n"
+        "2️⃣ После оплаты мы отправим вам ключ в личные сообщения\n"
+        "3️⃣ Мы поможем ввести ключ в настройках роутера (или сделаем это за вас при настройке)\n\n"
+        "Есть вопросы по ключу? Напишите нашему менеджеру — он подробно расскажет, "
+        "что нужно сделать, и поможет на каждом этапе 👇"
+    )
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📩 Получить ключ", url=f"https://t.me/{SUPPORT_USERNAME}")],
+        [InlineKeyboardButton("🏠 Главное меню", callback_data='main_menu')],
+    ])
+
+    message = await context.bot.send_message(
+        chat_id=chat_id,
+        text=text,
+        parse_mode='HTML',
+        reply_markup=keyboard
+    )
+    add_message_to_history(chat_id, message.message_id)
+
+
+# ═══════════════════════════════════════════════════
+# ВКЛАДКА 3 — О НАС
+# ═══════════════════════════════════════════════════
+
+async def show_about_tab(chat_id, context):
+    text = (
+        "ℹ️ <b>О нас</b>\n\n"
+        "Мы делаем интернет удобным и стабильным с первого включения.\n\n"
+        "Наша задача — чтобы вы просто включили роутер и всё заработало: "
+        "без ручных настроек, без переключений и без головной боли.\n\n"
+        "🔹 <b>Сервисы и платформы:</b>\n"
+        "  • YouTube, Instagram*, Facebook*, Twitter (X)\n"
+        "  • ChatGPT, Gemini, Claude и другие AI-сервисы\n"
+        "  • Discord, Spotify, Telegram-звонки\n"
+        "  • Netflix, Twitch и другие стриминговые платформы\n\n"
+        "🎮 <b>Игры:</b>\n"
+        "  • Rocket League, Fortnite, Valorant\n"
+        "  • Steam, Epic Games, PlayStation Network, Xbox Live\n"
+        "  • Низкий пинг и стабильное соединение на серверах\n\n"
+        "🔹 <b>Как это работает:</b>\n"
+        "  • Умная маршрутизация — трафик идёт по оптимальному маршруту автоматически\n"
+        "  • Не нужно включать и выключать ничего вручную\n"
+        "  • Все устройства в доме работают через один роутер\n\n"
+        "🔹 <b>Почему мы:</b>\n"
+        "  • Полная настройка под ваши задачи\n"
+        "  • Каждый роутер вскрываем и настраиваем на видео\n"
+        "  • Поддержка после покупки — поможем, если что-то пойдёт не так\n\n"
+        f"📩 <b>Заказ и вопросы:</b> @{SUPPORT_USERNAME}\n\n"
+        "<i>* Meta признана экстремистской организацией на территории РФ</i>"
+    )
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📩 Написать нам", url=f"https://t.me/{SUPPORT_USERNAME}")],
+        [InlineKeyboardButton("🏠 Главное меню", callback_data='main_menu')],
+    ])
+
+    message = await context.bot.send_message(
+        chat_id=chat_id,
+        text=text,
+        parse_mode='HTML',
+        reply_markup=keyboard
+    )
+    add_message_to_history(chat_id, message.message_id)
+
+
+# ═══════════════════════════════════════════════════
+# ЗАКАЗ
+# ═══════════════════════════════════════════════════
+
+async def handle_order(chat_id, context, router_id):
+    router = None
+    for r in ROUTERS:
+        if r["id"] == router_id:
+            router = r
+            break
+    if not router:
+        return
+
+    text = (
+        f"🛒 <b>Заказ: {router['brand']} {router['model']}</b>\n\n"
+        f"💰 Стоимость: {format_price(router['price'])}\n\n"
+        f"Для оформления заказа напишите нашему менеджеру 👇\n"
+        f"Он свяжется с вами, уточнит задачи и полностью настроит устройство."
+    )
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"📩 Написать @{SUPPORT_USERNAME}", url=f"https://t.me/{SUPPORT_USERNAME}")],
+        [
+            InlineKeyboardButton("📡 К моделям", callback_data='tab_models'),
+            InlineKeyboardButton("🏠 Меню", callback_data='main_menu'),
+        ],
+    ])
+
+    message = await context.bot.send_message(
+        chat_id=chat_id,
+        text=text,
+        parse_mode='HTML',
+        reply_markup=keyboard
+    )
+    add_message_to_history(chat_id, message.message_id)
+
+
+# ═══════════════════════════════════════════════════
+# ОБРАБОТЧИК КНОПОК
+# ═══════════════════════════════════════════════════
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    user_id = query.from_user.id
+    chat_id = query.message.chat.id
+    data = query.data
+
+    # Главное меню
+    if data == 'main_menu':
+        await delete_only_bot_messages(chat_id, context)
+        await show_main_menu(update, context)
+        return
+
+    if data == 'noop':
+        return
+
+    # Вкладка «Модели»
+    if data == 'tab_models':
+        await delete_only_bot_messages(chat_id, context)
+        await show_models_tab(chat_id, context)
+        return
+
+    # Карточка роутера
+    if data.startswith('router_'):
+        router_id = data.replace('router_', '')
+        await delete_only_bot_messages(chat_id, context)
+        await show_router_card(chat_id, context, router_id)
+        return
+
+    # Заказ
+    if data.startswith('order_'):
+        router_id = data.replace('order_', '')
+        await delete_only_bot_messages(chat_id, context)
+        await handle_order(chat_id, context, router_id)
+        return
+
+    # Вкладка «Ключ для роутера»
+    if data == 'tab_key':
+        await delete_only_bot_messages(chat_id, context)
+        await show_key_tab(chat_id, context)
+        return
+
+    # Вкладка «О нас»
+    if data == 'tab_about':
+        await delete_only_bot_messages(chat_id, context)
+        await show_about_tab(chat_id, context)
+        return
+
+
+# ═══════════════════════════════════════════════════
+# ОБРАБОТЧИК ТЕКСТОВЫХ СООБЩЕНИЙ
+# ═══════════════════════════════════════════════════
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    add_user_input_to_history(chat_id, update.message.message_id)
+
+    await delete_only_bot_messages(chat_id, context)
+    message = await context.bot.send_message(
+        chat_id=chat_id,
+        text="Используй кнопки меню для навигации 👇",
+        parse_mode='HTML',
+        reply_markup=get_main_menu()
+    )
+    add_message_to_history(chat_id, message.message_id)
+
+
+# ═══════════════════════════════════════════════════
+# ЗАПУСК
+# ═══════════════════════════════════════════════════
+
+def main():
+    print("=" * 50)
+    print("📡 ROUTER SHOP BOT")
+    print(f"Моделей: {len(ROUTERS)}")
+    print(f"Поддержка: @{SUPPORT_USERNAME}")
+    print("=" * 50)
+
+    application = Application.builder().token(TOKEN).build()
+
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CallbackQueryHandler(button_handler))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+    print("✅ Бот запущен!")
+    print("⏹️ Ctrl+C для остановки")
+    print("=" * 50)
+
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
+
+
+if __name__ == '__main__':
+    main()
